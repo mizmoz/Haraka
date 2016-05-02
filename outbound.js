@@ -73,6 +73,9 @@ exports.load_config = function () {
 };
 exports.load_config();
 
+// The default queue priority. We're using a scale of 1-5 here, with 1 being highest
+var default_priority = 3;
+
 var load_queue = async.queue(function (file, cb) {
     var hmail = new HMailItem(file, path.join(queue_dir, file));
     exports._add_file(hmail);
@@ -80,7 +83,7 @@ var load_queue = async.queue(function (file, cb) {
 }, cfg.concurrency_max);
 
 var in_progress = 0;
-var delivery_queue = async.queue(function (hmail, cb) {
+var delivery_queue = async.priorityQueue(function (hmail, cb) {
     in_progress++;
     hmail.next_cb = function () {
         in_progress--;
@@ -301,13 +304,22 @@ exports.load_queue_files = function (pid, cb_name, files) {
     }
 };
 
+/**
+ * Add the items to the queue ready for sending
+ *
+ * @param hmail
+ * @private
+ */
 exports._add_file = function (hmail) {
+    // attempt to find a priority for the item
+    var priority = (typeof hmail.notes.priority === 'number' ? hmail.notes.priority : default_priority);
+
     if (hmail.next_process < this.cur_time) {
-        delivery_queue.push(hmail);
+        delivery_queue.push(hmail, priority);
     }
     else {
         temp_fail_queue.add(hmail.next_process - this.cur_time, function () {
-            delivery_queue.push(hmail);
+            delivery_queue.push(hmail, priority);
         });
     }
 };
@@ -488,7 +500,8 @@ exports.send_trans_email = function (transaction, next) {
 
         for (var j=0; j<hmails.length; j++) {
             var hmail = hmails[j];
-            delivery_queue.push(hmail);
+            var priority = (typeof transaction.notes.priority === 'number' ? transaction.notes.priority : default_priority);
+            delivery_queue.push(hmail, priority);
         }
 
         if (next) {
@@ -773,7 +786,10 @@ HMailItem.prototype.send_email_respond = function (retval, delay_seconds) {
         this.logdebug("Delivery of this email delayed for " + delay_seconds + " seconds");
         var hmail = this;
         hmail.next_cb();
-        temp_fail_queue.add(delay_seconds * 1000, function () { delivery_queue.push(hmail); });
+        temp_fail_queue.add(delay_seconds * 1000, function () {
+            var priority = (typeof hmail.notes.priority === 'number' ? hmail.notes.priority : default_priority);
+            delivery_queue.push(hmail, priority);
+        });
     }
     else {
         this.logdebug("Sending mail: " + this.filename);
@@ -1896,7 +1912,10 @@ HMailItem.prototype.deferred_respond = function (retval, msg, params) {
 
         hmail.next_cb();
 
-        temp_fail_queue.add(delay, function () { delivery_queue.push(hmail); });
+        temp_fail_queue.add(delay, function () {
+            var priority = (typeof hmail.notes.priority === 'number' ? hmail.notes.priority : default_priority);
+            delivery_queue.push(hmail, priority);
+        });
     });
 };
 
